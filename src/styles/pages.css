@@ -1,0 +1,44 @@
+* {
+  font-family: "DM Sans" !important;
+}
+
+.form {
+  max-width: 500px;
+  border: 2px solid #ededed;
+  padding: 20px;
+  margin: 50px auto;
+  background-color: #ffffff;
+  border-radius: 10px;
+}
+.bold {
+  font-weight: bold !important;
+}
+.center-align {
+  text-align: center;
+}
+.left-align {
+  text-align: left;
+}
+.right-align {
+  text-align: right;
+}
+
+.m200 {
+  margin: 20px 0 !important;
+}
+.mt20 {
+  margin-top: 10px !important;
+}
+
+.capitalize {
+  text-transform: capitalize;
+}
+
+
+/* calendar */
+.fc-daygrid-event-harness {
+  cursor: pointer !important;
+}
+.fc-view{
+    background-color: #fff !important;
+}
