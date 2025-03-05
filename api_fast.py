@@ -24,6 +24,8 @@ from datetime import date
 from dateutil.relativedelta import relativedelta
 from email.mime.text import MIMEText
 import base64
+from jose import jwt
+from urllib.request import urlopen
 
 # Configuration
 SECRET_KEY = "your-secret-key"
@@ -44,6 +46,11 @@ SCOPES = [
     "https://www.googleapis.com/auth/calendar.events",
     "https://www.googleapis.com/auth/gmail.send"
 ]
+
+# Add Auth0 configuration
+AUTH0_DOMAIN = "your-auth0-domain"
+API_AUDIENCE = "your-api-audience"
+ALGORITHMS = ["RS256"]
 
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
@@ -257,24 +264,42 @@ def create_access_token(data: Dict[str, Any]) -> str:
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: int = int(payload.get("sub"))
-        if user_id is None:
-            raise credentials_exception
-    except (jwt.PyJWTError, ValueError):
-        raise credentials_exception
-        
-    user = db.query(User).filter(User.id == user_id).first()
-    if user is None:
-        raise credentials_exception
-    return user
+# Function to verify JWT using Auth0
+def verify_jwt(token: str) -> dict:
+    jsonurl = urlopen(f"https://{AUTH0_DOMAIN}/.well-known/jwks.json")
+    jwks = json.loads(jsonurl.read())
+    unverified_header = jwt.get_unverified_header(token)
+    rsa_key = {}
+    for key in jwks["keys"]:
+        if key["kid"] == unverified_header["kid"]:
+            rsa_key = {
+                "kty": key["kty"],
+                "kid": key["kid"],
+                "use": key["use"],
+                "n": key["n"],
+                "e": key["e"]
+            }
+    if rsa_key:
+        try:
+            payload = jwt.decode(
+                token,
+                rsa_key,
+                algorithms=ALGORITHMS,
+                audience=API_AUDIENCE,
+                issuer=f"https://{AUTH0_DOMAIN}/"
+            )
+            return payload
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Token expired")
+        except jwt.JWTClaimsError:
+            raise HTTPException(status_code=401, detail="Incorrect claims")
+        except Exception:
+            raise HTTPException(status_code=401, detail="Unable to parse authentication token")
+    raise HTTPException(status_code=401, detail="Unable to find appropriate key")
+
+# Dependency to get the current user
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
+    return verify_jwt(token)
 
 # Routes
 @app.post("/auth/login")
