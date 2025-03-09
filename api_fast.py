@@ -21,11 +21,6 @@ import csv
 from io import StringIO
 from enum import Enum
 from datetime import date
-from dateutil.relativedelta import relativedelta
-from email.mime.text import MIMEText
-import base64
-from jose import jwt
-from urllib.request import urlopen
 
 # Configuration
 SECRET_KEY = "your-secret-key"
@@ -35,22 +30,16 @@ SQLALCHEMY_DATABASE_URI = "sqlite:///taskreminder.db"
 UPLOAD_FOLDER = "uploads"
 
 # Add these to your configuration section
-GOOGLE_CLIENT_ID = ""
-GOOGLE_CLIENT_SECRET = ""
-GOOGLE_REDIRECT_URI = "http://localhost:3000/auth/google/callback"
+GOOGLE_CLIENT_ID = "your-client-id"
+GOOGLE_CLIENT_SECRET = "your-client-secret"
+GOOGLE_REDIRECT_URI = "http://<devfrontend>/user"
 SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile",
     "https://www.googleapis.com/auth/drive.file",
-    "https://www.googleapis.com/auth/calendar.events",
-    "https://www.googleapis.com/auth/gmail.send"
+    "https://www.googleapis.com/auth/calendar.events"
 ]
-
-# Add Auth0 configuration
-AUTH0_DOMAIN = "your-auth0-domain"
-API_AUDIENCE = "your-api-audience"
-ALGORITHMS = ["RS256"]
 
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
@@ -264,42 +253,24 @@ def create_access_token(data: Dict[str, Any]) -> str:
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
-# Function to verify JWT using Auth0
-def verify_jwt(token: str) -> dict:
-    jsonurl = urlopen(f"https://{AUTH0_DOMAIN}/.well-known/jwks.json")
-    jwks = json.loads(jsonurl.read())
-    unverified_header = jwt.get_unverified_header(token)
-    rsa_key = {}
-    for key in jwks["keys"]:
-        if key["kid"] == unverified_header["kid"]:
-            rsa_key = {
-                "kty": key["kty"],
-                "kid": key["kid"],
-                "use": key["use"],
-                "n": key["n"],
-                "e": key["e"]
-            }
-    if rsa_key:
-        try:
-            payload = jwt.decode(
-                token,
-                rsa_key,
-                algorithms=ALGORITHMS,
-                audience=API_AUDIENCE,
-                issuer=f"https://{AUTH0_DOMAIN}/"
-            )
-            return payload
-        except jwt.ExpiredSignatureError:
-            raise HTTPException(status_code=401, detail="Token expired")
-        except jwt.JWTClaimsError:
-            raise HTTPException(status_code=401, detail="Incorrect claims")
-        except Exception:
-            raise HTTPException(status_code=401, detail="Unable to parse authentication token")
-    raise HTTPException(status_code=401, detail="Unable to find appropriate key")
-
-# Dependency to get the current user
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
-    return verify_jwt(token)
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: int = int(payload.get("sub"))
+        if user_id is None:
+            raise credentials_exception
+    except (jwt.PyJWTError, ValueError):
+        raise credentials_exception
+        
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        raise credentials_exception
+    return user
 
 # Routes
 @app.post("/auth/login")
@@ -392,22 +363,6 @@ async def create_task(
     # Explicitly load relationships
     db.refresh(db_task, attribute_names=['assignee', 'creator'])
     
-    # Send email notification to assignee
-    if assignee and assignee.google_credentials:
-        await send_email(
-            assignee,
-            f"New Task Assigned: {task.title}",
-            f"""
-            You have been assigned a new task:
-            
-            Title: {task.title}
-            Description: {task.description}
-            Due Date: {task.due_date}
-            
-            Please log in to the system to view more details.
-            """
-        )
-
     return TaskOut.from_task(db_task)
 
 @app.get("/tasks", response_model=List[TaskOut])
@@ -688,41 +643,6 @@ def init_db():
         db.close()
 
 init_db()
-
-async def send_email(user: User, subject: str, body: str):
-    if not user.google_credentials:
-        raise HTTPException(status_code=400, detail="User has no Gmail credentials")
-    
-    try:
-        credentials = Credentials.from_authorized_user_info(
-            json.loads(user.google_credentials)
-        )
-        service = build('gmail', 'v1', credentials=credentials)
-        
-        message = MIMEText(body)
-        message['to'] = user.email
-        message['subject'] = subject
-        
-        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
-        service.users().messages().send(
-            userId='me',
-            body={'raw': raw_message}
-        ).execute()
-        
-        return True
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to send email: {str(e)}")
-
-@app.post("/send-test-email")
-async def send_test_email(
-    current_user: User = Depends(get_current_user)
-):
-    await send_email(
-        current_user,
-        "Test Email",
-        "This is a test email sent from your application!"
-    )
-    return {"message": "Test email sent successfully"}
 
 if __name__ == "__main__":
     import uvicorn
